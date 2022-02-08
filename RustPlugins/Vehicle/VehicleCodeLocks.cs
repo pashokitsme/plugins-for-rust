@@ -1,19 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
-using System.Windows.Markup;
 using Facepunch;
 using JetBrains.Annotations;
-using Mono.Cecil.Cil;
 using Network;
 using Oxide.Core;
-using Oxide.Core.Libraries;
 using Oxide.Core.Libraries.Covalence;
 using Oxide.Plugins.VehicleCodeLocksPlugin;
-using Rust.Modular;
 using UnityEngine;
-using VLB;
 using Extentions = Oxide.Plugins.VehicleCodeLocksPlugin.Extentions;
 
 namespace Oxide.Plugins
@@ -21,10 +15,11 @@ namespace Oxide.Plugins
 	[Info("Vehicle Code Locks", "pashamaladec", "0.1")]
 	public class VehicleCodeLocks : CovalencePlugin
 	{
-		private readonly string _saveFileName = "VehicleAuthorizations";
+		private const string SAVE_FILE_NAME = "vehiclecodelocks.authorizations";
 		private Dictionary<ulong, HashSet<Authorization>> _authorizations;
-		private readonly HashSet<ModularCar> _lockedCars = new HashSet<ModularCar>();
-		private readonly int _carKeyItemId = 946662961;
+
+		private const int CAR_KEY_ITEM_ID = 946662961;
+		private const int CODE_LOCK_ITEM_ID = 1159991980;
 
 		#region Plugin
 
@@ -34,15 +29,10 @@ namespace Oxide.Plugins
 			Extentions.Init(players);
 			_authorizations = LoadData();
 
-			foreach (var car in ModularCar.allCarsList)
+			foreach (var car in ModularCar.allCarsList.Where(car => car.carLock.HasALock))
 			{
-				if (car.carLock.HasALock)
-				{
-					if(HasCodeLock(car) == false)
-						PlaceCodeLockPrefab(car);
-
-					_lockedCars.Add(car);
-				}
+				if (HasCodeLock(car) == false)
+					PlaceCodeLockPrefab(car);
 			}
 		}
 
@@ -56,19 +46,19 @@ namespace Oxide.Plugins
 					data[user.Key].Add(auth.Serialize());
 			}
 
-			Interface.Oxide.DataFileSystem.WriteObject(_saveFileName, data);
+			Interface.Oxide.DataFileSystem.WriteObject(SAVE_FILE_NAME, data);
 		}
 
 		private Dictionary<ulong, HashSet<Authorization>> LoadData()
 		{
-			var data = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong, HashSet<SerializedAuthorization>>>(_saveFileName);
+			var data = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong, HashSet<SerializedAuthorization>>>(SAVE_FILE_NAME);
 			var auths = new Dictionary<ulong, HashSet<Authorization>>();
 
 			if (data == null)
 				return auths;
 
 			Puts($"Loading {data.Count} saved user auths");
-			
+
 			foreach (var user in data)
 			{
 				auths.Add(user.Key, new HashSet<Authorization>());
@@ -100,6 +90,7 @@ namespace Oxide.Plugins
 		private static class Localization
 		{
 			public static readonly string NoLock = Guid.NewGuid().ToString();
+			public static readonly string AlreadyHasLock = Guid.NewGuid().ToString();
 			public static readonly string Locked = Guid.NewGuid().ToString();
 			public static readonly string Unlocked = Guid.NewGuid().ToString();
 			public static readonly string AlreadyAuthorized = Guid.NewGuid().ToString();
@@ -114,6 +105,7 @@ namespace Oxide.Plugins
 			lang.RegisterMessages(new Dictionary<string, string>
 			{
 				[Localization.NoLock] = "This vehicle don't have a lock",
+				[Localization.AlreadyHasLock] = "This vehicle already has a lock",
 				[Localization.Locked] = "Vehicle locked. LockId is {0}",
 				[Localization.Unlocked] = "Vehicle unlocked",
 				[Localization.AlreadyAuthorized] = "Already authorized in {0}",
@@ -133,21 +125,8 @@ namespace Oxide.Plugins
 		{
 			GetMyAuths(player, cmd, args);
 			GetKeys(player, cmd, args);
-			player.Reply("Locked vehicles");
-			foreach (var car in _lockedCars)
-			{
-				player.Reply(car.carLock.LockID.ToString());
-			}
-			player.Reply("Auth Id - CodeLock ");
-			foreach (var user in _authorizations)
-			{
-				foreach (var auth in user.Value)
-				{
-					player.Reply($"{user.Key}: {auth.LockId} {auth.CodeLock.net.ID}");
-				}
-			}
 		}
-		
+
 		[Command("auth"), UsedImplicitly]
 		private void AuthorizeMe(IPlayer player, string cmd, string[] args)
 		{
@@ -227,7 +206,7 @@ namespace Oxide.Plugins
 			var baseplayer = player.ToBase();
 			player.Reply("Keys (physical auths):");
 
-			foreach (var key in baseplayer.inventory.containerMain.itemList.Where(item => item.info.itemid == _carKeyItemId))
+			foreach (var key in baseplayer.inventory.containerMain.itemList.Where(item => item.info.itemid == CAR_KEY_ITEM_ID))
 			{
 				player.Reply(key.instanceData.dataInt.ToString());
 			}
@@ -241,11 +220,10 @@ namespace Oxide.Plugins
 			if (hit.GetEntity().TryGetComponent(out car) == false)
 				return;
 
-			if (_lockedCars.Contains(car) == false)
+			if (HasCodeLock(car) == false)
 				return;
-			
+
 			RemoveCodeLock(car);
-			car.carLock.RemoveLock();
 			player.Reply(GetString(Localization.Unlocked));
 		}
 
@@ -257,8 +235,7 @@ namespace Oxide.Plugins
 			if (hit.GetEntity().TryGetComponent(out car) == false)
 				return;
 
-			car.carLock.AddALock();
-			PlaceCodeLockPrefab(car);
+			AddCodeLock(car);
 			player.Reply(GetString(Localization.Locked, car.carLock.LockID));
 		}
 
@@ -272,26 +249,21 @@ namespace Oxide.Plugins
 			var car = entity as ModularCar;
 			if (car == null)
 				return;
-			
-			if (_lockedCars.Contains(car))
-				_lockedCars.Remove(car);
-				
+
 			DeauthorizeAll(car);
 		}
 
 		[UsedImplicitly]
-		private object OnEntitySnapshot(BaseNetworkable entity, Connection connection)
+		private object OnEntitySnapshot(ModularCar car, Connection connection)
 		{
-			var car = entity as ModularCar;
-			if (car == null)
-				return null;
+			var hasCodeLock = HasCodeLock(car);
 
-			if (_lockedCars.Contains(car) && car.carLock.HasALock == false)
-				RemoveCodeLock(car);
-			
+			if (car.carLock.HasALock && hasCodeLock == false)
+				car.carLock.RemoveLock();
+
 			return null;
 		}
-		
+
 		[UsedImplicitly]
 		private object OnCodeEntered(CodeLock codeLock, BasePlayer player, string code)
 		{
@@ -304,7 +276,31 @@ namespace Oxide.Plugins
 
 			return null;
 		}
-		
+
+		[UsedImplicitly]
+		private void OnPlayerInput(BasePlayer player, InputState input)
+		{
+			var activeItem = player.GetActiveItem();
+			if (activeItem == null || activeItem.info.itemid != CODE_LOCK_ITEM_ID)
+				return;
+
+			if (input.WasJustPressed(BUTTON.FIRE_PRIMARY) == false)
+				return;
+
+			var car = player.RaycastFromEyes().GetEntity() as ModularCar;
+			if (car == null)
+				return;
+
+			if (HasCodeLock(car) == false)
+			{
+				AddCodeLock(car);
+				activeItem.UseItem();
+				return;
+			}
+
+			player.ChatMessage(GetString(Localization.AlreadyHasLock));
+		}
+
 		[UsedImplicitly]
 		private object CanChangeCode(BasePlayer player, CodeLock codeLock, string newCode, bool isGuestCode)
 		{
@@ -343,26 +339,38 @@ namespace Oxide.Plugins
 		[UsedImplicitly]
 		private object OnPlayerDeath(BasePlayer player, HitInfo info)
 		{
-			player.inventory.containerMain.itemList.RemoveAll(item => item.info.itemid == _carKeyItemId);
+			player.inventory.containerMain.itemList.RemoveAll(item => item.info.itemid == CAR_KEY_ITEM_ID);
 			player.inventory.containerMain.capacity = 24;
 			return null;
 		}
-		
+
 		[UsedImplicitly]
 		private bool CanCraft(ItemCrafter itemCrafter, ItemBlueprint bp, int amount)
 		{
-			if (bp.targetItem.itemid == 946662961)
-			{
-				itemCrafter.baseEntity.ChatMessage(GetString(Localization.CantCraftKey));
-				return false;
-			}
+			if (bp.targetItem.itemid != 946662961)
+				return true;
 
-			return true;
+			itemCrafter.baseEntity.ChatMessage(GetString(Localization.CantCraftKey));
+			return false;
 		}
 
 		#endregion
 
 		#region Methods
+
+		private void AddCodeLock(ModularCar car)
+		{
+			PlaceCodeLockPrefab(car);
+			car.carLock.AddALock();
+		}
+
+		private void RemoveCodeLock(ModularCar car)
+		{
+			var codeLock = car.GetComponentInChildren<CodeLock>();
+			DeauthorizeAll(car);
+			codeLock.Kill(BaseNetworkable.DestroyMode.Gib);
+			car.carLock.RemoveLock();
+		}
 
 		private void Authorize(BasePlayer player, ModularCar car)
 		{
@@ -407,7 +415,8 @@ namespace Oxide.Plugins
 				}
 			}
 
-			var key = player.inventory.containerMain.itemList.FirstOrDefault(item => item.info.itemid == _carKeyItemId && item.instanceData.dataInt == lockId);
+			var key = player.inventory.containerMain.itemList.FirstOrDefault(item =>
+				item.info.itemid == CAR_KEY_ITEM_ID && item.instanceData.dataInt == lockId);
 			if (key == null)
 				return;
 
@@ -420,32 +429,18 @@ namespace Oxide.Plugins
 				.Where(auth => auth.Value.Select(x => x.LockId).Contains(car.carLock.LockID))
 				.Select(x => x.Key).ToList();
 
-			foreach (var userId in authorized)
-			{
-				var player = players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase();
-				if(player == null)
-					continue;
-				
+			foreach (var player in authorized.Select(userId => players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase())
+				.Where(player => player != null))
 				Deauthorize(player, car.carLock.LockID);
-			}
-		}
-		
-		private void RemoveCodeLock(ModularCar car)
-		{
-			var codeLock = car.GetComponentInChildren<CodeLock>();
-			DeauthorizeAll(car);
-			codeLock.Kill(BaseNetworkable.DestroyMode.Gib);
-			_lockedCars.Remove(car);
-			Puts($"Removing lock {car.carLock.LockID}");
 		}
 
-		private bool HasCodeLock(ModularCar car) => car.GetComponentInChildren<CodeLock>() != null;
+		private static bool HasCodeLock(Component component) => component.GetComponentInChildren<CodeLock>() != null;
 
 		private void PlaceCodeLockPrefab(ModularCar car)
 		{
-			if(_lockedCars.Contains(car))
+			if (HasCodeLock(car))
 				PrintError($"Already have lock");
-			
+
 			var target = car.GetFuelSystem().GetFuelContainer().transform;
 			var position = target.transform.localPosition;
 			position.x -= .4f;
@@ -456,20 +451,16 @@ namespace Oxide.Plugins
 
 			var code = entity.GetComponent<CodeLock>();
 			code.SetParent(car);
-			code.code = "0000";
-			code.hasCode = true;
 
 			code.Spawn();
 			Effect.server.Run("assets/prefabs/locks/keypad/effects/lock-code-deploy.prefab", code.transform.position);
-			code.SetFlag(BaseEntity.Flags.Locked, true);
-
-			_lockedCars.Add(car);
+			code.SetFlag(BaseEntity.Flags.Locked, false);
 		}
 
 		private void GiveKeyToPlayer(BasePlayer player, int keyId)
 		{
 			var storage = player.inventory.containerMain;
-			
+
 			if (storage == null)
 			{
 				player.ChatMessage($"Storage is null");
@@ -482,7 +473,7 @@ namespace Oxide.Plugins
 				return;
 			}
 
-			var item = ItemManager.CreateByItemID(_carKeyItemId);
+			var item = ItemManager.CreateByItemID(CAR_KEY_ITEM_ID);
 			var data = Pool.Get<ProtoBuf.Item.InstanceData>();
 			data.dataInt = keyId;
 			data.ShouldPool = false;
@@ -514,7 +505,7 @@ namespace Oxide.Plugins
 
 			public SerializedAuthorization Serialize() => new SerializedAuthorization(LockId, CodeLock.net.ID);
 		}
-		
+
 		private class SerializedAuthorization
 		{
 			public int LockId { get; }
@@ -529,10 +520,7 @@ namespace Oxide.Plugins
 			public Authorization Deserialize()
 			{
 				var codeLock = BaseNetworkable.serverEntities.Find(CodeLockNetId);
-				if (codeLock == null)
-					return null;
-
-				return new Authorization(LockId, (CodeLock) codeLock);
+				return codeLock == null ? null : new Authorization(LockId, (CodeLock) codeLock);
 			}
 		}
 
@@ -555,17 +543,18 @@ namespace Oxide.Plugins
 
 				var target = _players.FindPlayer(commandArgs[offset]);
 
-				if (target == null)
-					return ifNull;
-
-				return target;
+				return target ?? ifNull;
 			}
 
 			public static RaycastHit RaycastFromEyes(this IPlayer player)
 			{
-				var baseplayer = player.ToBase();
+				return player.ToBase().RaycastFromEyes();
+			}
+
+			public static RaycastHit RaycastFromEyes(this BasePlayer player)
+			{
 				RaycastHit hit;
-				Physics.Raycast(baseplayer.eyes.HeadRay(), out hit);
+				Physics.Raycast(player.eyes.HeadRay(), out hit);
 				return hit;
 			}
 		}
