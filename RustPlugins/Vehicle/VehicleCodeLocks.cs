@@ -1,10 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Facepunch;
 using JetBrains.Annotations;
-using Network;
-using Oxide.Core;
 using Oxide.Core.Libraries.Covalence;
 using Oxide.Plugins.VehicleCodeLocksPlugin;
 using UnityEngine;
@@ -15,8 +14,7 @@ namespace Oxide.Plugins
 	[Info("Vehicle Code Locks", "pashamaladec", "0.1")]
 	public class VehicleCodeLocks : CovalencePlugin
 	{
-		private const string SAVE_FILE_NAME = "vehiclecodelocks.authorizations";
-		private Dictionary<ulong, HashSet<Authorization>> _authorizations;
+		private Dictionary<CodeLock, int> _codeLocks;
 
 		private const int CAR_KEY_ITEM_ID = 946662961;
 		private const int CODE_LOCK_ITEM_ID = 1159991980;
@@ -26,61 +24,34 @@ namespace Oxide.Plugins
 		[UsedImplicitly]
 		private void Loaded()
 		{
+			var watch = new Stopwatch();
+			watch.Start();
+
 			Extentions.Init(players);
-			_authorizations = LoadData();
-
-			foreach (var car in ModularCar.allCarsList.Where(car => car.carLock.HasALock))
-			{
-				if (HasCodeLock(car) == false)
-					PlaceCodeLockPrefab(car);
-			}
+			_codeLocks = LoadData();
+			watch.Stop();
+			Puts($"Loaded {_codeLocks.Count} cars with code lock");
+			Puts($"Load took {watch.ElapsedMilliseconds} ms");
 		}
 
-		private void SaveData()
-		{
-			var data = new Dictionary<ulong, HashSet<SerializedAuthorization>>();
-			foreach (var user in _authorizations)
-			{
-				data.Add(user.Key, new HashSet<SerializedAuthorization>());
-				foreach (var auth in user.Value)
-					data[user.Key].Add(auth.Serialize());
-			}
-
-			Interface.Oxide.DataFileSystem.WriteObject(SAVE_FILE_NAME, data);
-		}
-
-		private Dictionary<ulong, HashSet<Authorization>> LoadData()
-		{
-			var data = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong, HashSet<SerializedAuthorization>>>(SAVE_FILE_NAME);
-			var auths = new Dictionary<ulong, HashSet<Authorization>>();
-
-			if (data == null)
-				return auths;
-
-			Puts($"Loading {data.Count} saved user auths");
-
-			foreach (var user in data)
-			{
-				auths.Add(user.Key, new HashSet<Authorization>());
-				foreach (var auth in user.Value)
-				{
-					var deserialized = auth.Deserialize();
-
-					if (deserialized != null)
-						auths[user.Key].Add(auth.Deserialize());
-					else
-						Puts($"Error while parse {auth.LockId} {auth.CodeLockNetId} for user {user.Key}");
-				}
-			}
-
-			return auths;
-		}
+		private static Dictionary<CodeLock, int> LoadData() => ModularCar.allCarsList
+			.Where(car => car.carLock.HasALock && HasCodeLock(car))
+			.ToDictionary(GetAttachedCodeLock, value => value.carLock.LockID);
 
 		[UsedImplicitly]
 		private void OnServerSave()
 		{
-			SaveData();
-			Puts($"Saved with {_authorizations.Count} auths");
+			var watch = new Stopwatch();
+			watch.Start();
+			players.All
+				.Select(pl => pl.ToBase())
+				.Where(pl2 => pl2 != null)
+				.Select(pl3 => pl3.inventory.containerMain.itemList)
+				.ToList()
+				.ForEach(itemList =>
+					itemList.RemoveAll(item => item.info.itemid == CAR_KEY_ITEM_ID && _codeLocks.ContainsValue(item.instanceData.dataInt) == false));
+			watch.Stop();
+			Puts($"OnServerSave processing took {watch.ElapsedMilliseconds}ms");
 		}
 
 		#endregion
@@ -91,13 +62,14 @@ namespace Oxide.Plugins
 		{
 			public static readonly string NoLock = Guid.NewGuid().ToString();
 			public static readonly string AlreadyHasLock = Guid.NewGuid().ToString();
+			public static readonly string ShouldLookAtCar = Guid.NewGuid().ToString();
 			public static readonly string Locked = Guid.NewGuid().ToString();
 			public static readonly string Unlocked = Guid.NewGuid().ToString();
 			public static readonly string AlreadyAuthorized = Guid.NewGuid().ToString();
-			public static readonly string Authorized = Guid.NewGuid().ToString();
-			public static readonly string Deauthorized = Guid.NewGuid().ToString();
 			public static readonly string CantCraftKey = Guid.NewGuid().ToString();
 			public static readonly string NoAuths = Guid.NewGuid().ToString();
+			public static readonly string Authorized = Guid.NewGuid().ToString();
+			public static readonly string Deauthorized = Guid.NewGuid().ToString();
 		}
 
 		protected override void LoadDefaultMessages()
@@ -106,13 +78,14 @@ namespace Oxide.Plugins
 			{
 				[Localization.NoLock] = "This vehicle don't have a lock",
 				[Localization.AlreadyHasLock] = "This vehicle already has a lock",
+				[Localization.ShouldLookAtCar] = "You should look at car",
 				[Localization.Locked] = "Vehicle locked. LockId is {0}",
 				[Localization.Unlocked] = "Vehicle unlocked",
 				[Localization.AlreadyAuthorized] = "Already authorized in {0}",
-				[Localization.Authorized] = "Authorized in car: {0}",
-				[Localization.Deauthorized] = "Deauthorized from car: {0}",
 				[Localization.CantCraftKey] = "You can't craft car key",
-				[Localization.NoAuths] = "No auths"
+				[Localization.NoAuths] = "No auths",
+				[Localization.Authorized] = "You authorized in car {0}",
+				[Localization.Deauthorized] = "You deauthorized from car {0}"
 			}, this);
 		}
 
@@ -120,21 +93,24 @@ namespace Oxide.Plugins
 
 		#region Commands
 
-		[Command("test"), UsedImplicitly]
+		[Command("test"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
 		private void Test(IPlayer player, string cmd, string[] args)
 		{
 			GetMyAuths(player, cmd, args);
 			GetKeys(player, cmd, args);
 		}
 
-		[Command("auth"), UsedImplicitly]
+		[Command("auth"), Permission("vehiclecodelocks.command.auth"), UsedImplicitly]
 		private void AuthorizeMe(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
-
+			var entity = hit.GetEntity();
 			ModularCar car;
-			if (hit.GetEntity().TryGetComponent(out car) == false)
+			if (entity == null || entity.TryGetComponent(out car) == false)
+			{
+				player.Reply(GetString(Localization.ShouldLookAtCar));
 				return;
+			}
 
 			if (car.carLock.HasALock == false)
 			{
@@ -144,16 +120,20 @@ namespace Oxide.Plugins
 
 			var baseplayer = player.ToBase();
 			Authorize(baseplayer, car);
+			player.Reply(GetString(Localization.Authorized, car.carLock.LockID));
 		}
 
-		[Command("deauth"), UsedImplicitly]
+		[Command("deauth"), Permission("vehiclecodelocks.command.deauth"), UsedImplicitly]
 		private void DeauthorizeMe(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
-
+			var entity = hit.GetEntity();
 			ModularCar car;
-			if (hit.GetEntity().TryGetComponent(out car) == false)
+			if (entity == null || entity.TryGetComponent(out car) == false)
+			{
+				player.Reply(GetString(Localization.ShouldLookAtCar));
 				return;
+			}
 
 			if (car.carLock.HasALock == false)
 			{
@@ -163,33 +143,37 @@ namespace Oxide.Plugins
 
 			var baseplayer = player.ToBase();
 			Deauthorize(baseplayer, car.carLock.LockID);
+			player.Reply(GetString(Localization.Deauthorized, car.carLock.LockID));
+
 		}
 
-		[Command("auths"), UsedImplicitly]
+		[Command("auths"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
 		private void GetMyAuths(IPlayer player, string cmd, string[] args)
 		{
 			var baseplayer = player.ToBase();
-			player.Reply("Current logical auths:");
-			if (_authorizations.ContainsKey(baseplayer.userID) == false)
+			var auths = FindPlayerAuths(baseplayer.userID);
+			player.Reply($"Current auths ({auths.Count()}):");
+			if (auths.Any() == false)
 			{
 				player.Reply(GetString(Localization.NoAuths));
 				return;
 			}
 
-			foreach (var auth in _authorizations[baseplayer.userID])
-			{
-				player.Reply(auth.LockId.ToString());
-			}
+			foreach (var pair in auths)
+				player.Reply($"{pair.Value} : {pair.Key.code} (netId {pair.Key.net.ID})");
 		}
 
-		[Command("carid"), UsedImplicitly]
-		private void GetCarId(IPlayer player, string cmd, string[] args)
+		[Command("lockid"), Permission("vehiclecodelocks.command.lockid"), UsedImplicitly]
+		private void GetCarLockId(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
-
+			var entity = hit.GetEntity();
 			ModularCar car;
-			if (hit.GetEntity().TryGetComponent(out car) == false)
+			if (entity == null || entity.TryGetComponent(out car) == false)
+			{
+				player.Reply(GetString(Localization.ShouldLookAtCar));
 				return;
+			}
 
 			if (car.carLock.HasALock == false)
 			{
@@ -200,7 +184,7 @@ namespace Oxide.Plugins
 			player.Reply(car.carLock.LockID.ToString());
 		}
 
-		[Command("keys"), UsedImplicitly]
+		[Command("keys"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
 		private void GetKeys(IPlayer player, string cmd, string[] args)
 		{
 			var baseplayer = player.ToBase();
@@ -212,13 +196,17 @@ namespace Oxide.Plugins
 			}
 		}
 
-		[Command("unlock"), UsedImplicitly]
+		[Command("unlock"), Permission("vehiclecodelocks.command.unlock"), UsedImplicitly]
 		private void ForceUnlockCar(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
+			var entity = hit.GetEntity();
 			ModularCar car;
-			if (hit.GetEntity().TryGetComponent(out car) == false)
+			if (entity == null || entity.TryGetComponent(out car) == false)
+			{
+				player.Reply(GetString(Localization.ShouldLookAtCar));
 				return;
+			}
 
 			if (HasCodeLock(car) == false)
 				return;
@@ -227,13 +215,17 @@ namespace Oxide.Plugins
 			player.Reply(GetString(Localization.Unlocked));
 		}
 
-		[Command("lock"), UsedImplicitly]
+		[Command("lock"), Permission("vehiclecodelocks.command.lock"), UsedImplicitly]
 		private void ForceLockCar(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
+			var entity = hit.GetEntity();
 			ModularCar car;
-			if (hit.GetEntity().TryGetComponent(out car) == false)
+			if (entity == null || entity.TryGetComponent(out car) == false)
+			{
+				player.Reply(GetString(Localization.ShouldLookAtCar));
 				return;
+			}
 
 			AddCodeLock(car);
 			player.Reply(GetString(Localization.Locked, car.carLock.LockID));
@@ -244,24 +236,29 @@ namespace Oxide.Plugins
 		#region Hooks
 
 		[UsedImplicitly]
-		private void OnEntityKill(BaseNetworkable entity)
+		private void OnEntityKill(ModularCar car)
 		{
-			var car = entity as ModularCar;
-			if (car == null)
+
+			var codeLock = GetAttachedCodeLock(car);
+			if (codeLock == null)
 				return;
 
-			DeauthorizeAll(car);
+			DeauthorizeAll(car.carLock.LockID);
+			_codeLocks.Remove(codeLock);
 		}
 
 		[UsedImplicitly]
-		private object OnEntitySnapshot(ModularCar car, Connection connection)
+		private void OnEntityKill(CodeLock codeLock)
 		{
-			var hasCodeLock = HasCodeLock(car);
+			var car = GetAttachedCar(codeLock);
+			if (car == null)
+				return;
 
-			if (car.carLock.HasALock && hasCodeLock == false)
-				car.carLock.RemoveLock();
+			if (codeLock.whitelistPlayers.Any())
+				DeauthorizeAll(car.carLock.LockID);
 
-			return null;
+			_codeLocks.Remove(codeLock);
+			car.carLock.RemoveLock();
 		}
 
 		[UsedImplicitly]
@@ -270,10 +267,12 @@ namespace Oxide.Plugins
 			if (code != codeLock.code)
 				return null;
 
-			var parent = codeLock.parentEntity.Get(true);
-			if (parent != null && parent is ModularCar)
-				Authorize(player, (ModularCar) parent);
+			var car = GetAttachedCar(codeLock);
+			if (car == null)
+				return null;
 
+			codeLock.whitelistPlayers.Add(player.userID);
+			Authorize(player, car);
 			return null;
 		}
 
@@ -304,22 +303,31 @@ namespace Oxide.Plugins
 		[UsedImplicitly]
 		private object CanChangeCode(BasePlayer player, CodeLock codeLock, string newCode, bool isGuestCode)
 		{
-			var parent = codeLock.parentEntity.Get(true);
-			if (parent != null && parent is ModularCar)
+			if (_codeLocks.ContainsKey(codeLock) == false)
+				return null;
+
+			var car = GetAttachedCar(codeLock);
+			if (car == null)
+				return null;
+
+			if (codeLock.whitelistPlayers.Any())
 			{
-				var car = parent as ModularCar;
-				var lockId = car.carLock.LockID;
-
-				foreach (var auth in _authorizations)
+				foreach (var target in codeLock.whitelistPlayers
+					.Select(userId => players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase())
+					.Where(target => target != null))
 				{
-					var t = players.FindPlayer(auth.Key.ToString()).Object as BasePlayer;
-					Deauthorize(t, lockId);
-					car.carLock.AddALock();
+					Deauthorize(target, codeLock);
 				}
-
-				Authorize(player, car);
 			}
 
+
+			codeLock.whitelistPlayers.Clear();
+			Authorize(player, car);
+
+			if (isGuestCode)
+				codeLock.guestCode = newCode;
+			else
+				codeLock.code = newCode;
 			return null;
 		}
 
@@ -327,13 +335,12 @@ namespace Oxide.Plugins
 		private void OnUserRespawned(IPlayer player)
 		{
 			var baseplayer = player.ToBase();
-			if (_authorizations.ContainsKey(baseplayer.userID))
-			{
-				foreach (var auth in _authorizations[baseplayer.userID])
-				{
-					GiveKeyToPlayer(baseplayer, auth.LockId);
-				}
-			}
+			var auths = FindPlayerAuths(baseplayer.userID);
+			if (auths.Any() == false)
+				return;
+
+			foreach (var auth in auths)
+				GiveKeyToPlayer(baseplayer, auth.Value);
 		}
 
 		[UsedImplicitly]
@@ -358,88 +365,141 @@ namespace Oxide.Plugins
 
 		#region Methods
 
+		private List<KeyValuePair<CodeLock, int>> FindPlayerAuths(ulong userId) =>
+			_codeLocks.Where(pair => pair.Key.whitelistPlayers.Contains(userId)).ToList();
+
 		private void AddCodeLock(ModularCar car)
 		{
 			PlaceCodeLockPrefab(car);
-			car.carLock.AddALock();
+			Puts($"Created codelock for car: {car.carLock.LockID}");
 		}
 
-		private void RemoveCodeLock(ModularCar car)
+		private void RemoveCodeLock(ModularCar car, int lockId = -1)
 		{
+			if (lockId == -1)
+				lockId = car.carLock.LockID;
+
+			DeauthorizeAll(lockId);
 			var codeLock = car.GetComponentInChildren<CodeLock>();
-			DeauthorizeAll(car);
 			codeLock.Kill(BaseNetworkable.DestroyMode.Gib);
 			car.carLock.RemoveLock();
+			Puts($"Removed codelock for car: {car.carLock.LockID}");
 		}
 
 		private void Authorize(BasePlayer player, ModularCar car)
 		{
-			if (_authorizations.ContainsKey(player.userID))
+			var codeLock = GetAttachedCodeLock(car);
+
+			if (codeLock == null)
 			{
-				if (_authorizations[player.userID].Select(x => x.LockId).Contains(car.carLock.LockID))
-				{
-					player.ChatMessage(GetString(Localization.AlreadyAuthorized, car.carLock.LockID));
-					return;
-				}
+				PrintError($"Tried to authorize {player}, but car haven't lock");
+				player.ChatMessage(GetString(Localization.NoLock));
+				return;
 			}
 
+			if (codeLock.whitelistPlayers.Contains(player.userID))
+			{
+				player.ChatMessage(GetString(Localization.AlreadyAuthorized, car.carLock.LockID));
+				return;
+			}
+			
+			codeLock.whitelistPlayers.Add(player.userID);
 			GiveKeyToPlayer(player, car.carLock.LockID);
-
-			if (_authorizations.ContainsKey(player.userID) == false)
-				_authorizations.Add(player.userID, new HashSet<Authorization>());
-
-			var codeLock = car.GetComponentInChildren<CodeLock>(false);
-
-			if (codeLock.whitelistPlayers.Contains(player.userID) == false)
-				codeLock.whitelistPlayers.Add(player.userID);
-
-			_authorizations[player.userID].Add(new Authorization(car.carLock.LockID, codeLock));
-			player.ChatMessage(GetString(Localization.Authorized, car.carLock.LockID));
+			Puts($"Authorized {player} in lock {car.carLock.LockID}");
 		}
 
 		private void Deauthorize(BasePlayer player, int lockId)
 		{
-			if (_authorizations.ContainsKey(player.userID))
+			var pairs = _codeLocks.Where(pair => pair.Value == lockId).ToList();
+
+			if (pairs.Any() == false)
 			{
-				if (lockId == 0)
-					return;
-
-				if (_authorizations[player.userID].Select(x => x.LockId).Contains(lockId))
-				{
-					var auth = _authorizations[player.userID].First(x => x.LockId == lockId);
-					player.inventory.containerMain.capacity--;
-					_authorizations[player.userID].Remove(auth);
-
-					auth.CodeLock.whitelistPlayers.Remove(player.userID);
-					player.ChatMessage(GetString(Localization.Deauthorized, lockId));
-				}
+				PrintError($"Invalid lockId {lockId}");
+				return;
 			}
 
+			var codeLock = pairs.FirstOrDefault().Key;
+			if (codeLock == null)
+			{
+				PrintError($"Invalid code lock for lockId {lockId}");
+				player.ChatMessage(GetString(Localization.NoLock));
+				return;
+			}
+
+			Deauthorize(player, codeLock);
+		}
+
+		private void Deauthorize(BasePlayer player, CodeLock codeLock)
+		{
+			var car = GetAttachedCar(codeLock);
+			if (car == null || car.carLock.HasALock == false)
+			{
+				PrintError($"Invalid code lock");
+				player.ChatMessage(GetString(Localization.NoLock));
+				return;
+			}
+
+			if (codeLock.whitelistPlayers.Contains(player.userID) == false)
+			{
+				PrintError($"{player} not authorized in {car.carLock.LockID}");
+				return;
+			}
+			
+			codeLock.whitelistPlayers.Remove(player.userID);
 			var key = player.inventory.containerMain.itemList.FirstOrDefault(item =>
-				item.info.itemid == CAR_KEY_ITEM_ID && item.instanceData.dataInt == lockId);
+				item.info.itemid == CAR_KEY_ITEM_ID && item.instanceData.dataInt == car.carLock.LockID);
 			if (key == null)
 				return;
 
 			player.inventory.containerMain.Remove(key);
+			Puts($"Deauthorized {player} from lock {car.carLock.LockID}");
 		}
 
-		private void DeauthorizeAll(ModularCar car)
+		private void DeauthorizeAll(int lockId)
 		{
-			var authorized = _authorizations
-				.Where(auth => auth.Value.Select(x => x.LockId).Contains(car.carLock.LockID))
-				.Select(x => x.Key).ToList();
+			if (lockId == 0)
+				return;
 
-			foreach (var player in authorized.Select(userId => players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase())
-				.Where(player => player != null))
-				Deauthorize(player, car.carLock.LockID);
+			var codeLock = _codeLocks.Where(pair => pair.Value == lockId).Select(pair2 => pair2.Key).ToList().FirstOrDefault();
+			if (codeLock == null)
+			{
+				PrintError($"Invalid code lock for {lockId} *DeauthAll");
+				return;
+			}
+
+			foreach (var userId in codeLock.whitelistPlayers)
+			{
+				var player = players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase();
+				if (player == null)
+					continue;
+
+				var key = player.inventory.containerMain.itemList.FirstOrDefault(item =>
+					item.info.itemid == CAR_KEY_ITEM_ID && item.instanceData.dataInt == lockId);
+				if (key == null)
+					continue;
+
+				player.inventory.containerMain.Remove(key);
+				Puts($"Deauthorized {player} from lock {lockId}");
+			}
+
+			codeLock.whitelistPlayers.Clear();
 		}
 
-		private static bool HasCodeLock(Component component) => component.GetComponentInChildren<CodeLock>() != null;
+		private static bool HasCodeLock(ModularCar car) => GetAttachedCodeLock(car) != null;
+
+		[CanBeNull]
+		private static ModularCar GetAttachedCar(CodeLock codeLock) => codeLock.GetComponentInParent<ModularCar>();
+
+		[CanBeNull]
+		private static CodeLock GetAttachedCodeLock(ModularCar codeLock) => codeLock.GetComponentInChildren<CodeLock>();
 
 		private void PlaceCodeLockPrefab(ModularCar car)
 		{
 			if (HasCodeLock(car))
+			{
 				PrintError($"Already have lock");
+				return;
+			}
 
 			var target = car.GetFuelSystem().GetFuelContainer().transform;
 			var position = target.transform.localPosition;
@@ -447,14 +507,18 @@ namespace Oxide.Plugins
 			position.z -= .1f;
 			var rotation = target.localRotation;
 			rotation.y += 1f;
-			var entity = GameManager.server.CreateEntity("assets/prefabs/locks/keypad/lock.code.prefab", position, rotation);
+			var codeLock = GameManager.server.CreateEntity("assets/prefabs/locks/keypad/lock.code.prefab", position, rotation) as CodeLock;
 
-			var code = entity.GetComponent<CodeLock>();
-			code.SetParent(car);
+			if (codeLock == null)
+				return;
 
-			code.Spawn();
-			Effect.server.Run("assets/prefabs/locks/keypad/effects/lock-code-deploy.prefab", code.transform.position);
-			code.SetFlag(BaseEntity.Flags.Locked, false);
+			codeLock.SetParent(car);
+
+			codeLock.Spawn();
+			car.carLock.AddALock();
+			_codeLocks.Add(codeLock, car.carLock.LockID);
+			Effect.server.Run("assets/prefabs/locks/keypad/effects/lock-code-deploy.prefab", codeLock.transform.position);
+			codeLock.SetFlag(BaseEntity.Flags.Locked, false);
 		}
 
 		private void GiveKeyToPlayer(BasePlayer player, int keyId)
@@ -467,7 +531,7 @@ namespace Oxide.Plugins
 				return;
 			}
 
-			if (storage.itemList.FirstOrDefault(x => x.instanceData != null && x.instanceData.dataInt == keyId) != null)
+			if (storage.itemList.FirstOrDefault(x => x.info.itemid == CAR_KEY_ITEM_ID && x.instanceData.dataInt == keyId) != null)
 			{
 				PrintWarning($"Player alredy have key {keyId}");
 				return;
@@ -483,46 +547,7 @@ namespace Oxide.Plugins
 			item.MoveToContainer(storage, storage.capacity - 1, false);
 		}
 
-		private string GetString(string key, params object[] args)
-		{
-			return string.Format(lang.GetMessage(key, this), args);
-		}
-
-		#endregion
-
-		#region Classes
-
-		private class Authorization
-		{
-			public int LockId { get; }
-			public CodeLock CodeLock { get; }
-
-			public Authorization(int lockId, CodeLock codeLock)
-			{
-				LockId = lockId;
-				CodeLock = codeLock;
-			}
-
-			public SerializedAuthorization Serialize() => new SerializedAuthorization(LockId, CodeLock.net.ID);
-		}
-
-		private class SerializedAuthorization
-		{
-			public int LockId { get; }
-			public uint CodeLockNetId { get; }
-
-			public SerializedAuthorization(int lockId, uint codeLockNetId)
-			{
-				LockId = lockId;
-				CodeLockNetId = codeLockNetId;
-			}
-
-			public Authorization Deserialize()
-			{
-				var codeLock = BaseNetworkable.serverEntities.Find(CodeLockNetId);
-				return codeLock == null ? null : new Authorization(LockId, (CodeLock) codeLock);
-			}
-		}
+		private string GetString(string key, params object[] args) => string.Format(lang.GetMessage(key, this), args);
 
 		#endregion
 	}
