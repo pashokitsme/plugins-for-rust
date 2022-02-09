@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using Facepunch;
 using JetBrains.Annotations;
+using Network;
 using Oxide.Core.Libraries.Covalence;
 using Oxide.Plugins.VehicleCodeLocksPlugin;
 using UnityEngine;
@@ -144,7 +145,6 @@ namespace Oxide.Plugins
 			var baseplayer = player.ToBase();
 			Deauthorize(baseplayer, car.carLock.LockID);
 			player.Reply(GetString(Localization.Deauthorized, car.carLock.LockID));
-
 		}
 
 		[Command("auths"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
@@ -236,9 +236,16 @@ namespace Oxide.Plugins
 		#region Hooks
 
 		[UsedImplicitly]
+		private object OnEntitySnapshot(ModularCar car, Connection connection)
+		{
+			if (HasCodeLock(car) && car.carLock.HasALock == false)
+				RemoveCodeLock(car);
+			return null;
+		}
+
+		[UsedImplicitly]
 		private void OnEntityKill(ModularCar car)
 		{
-
 			var codeLock = GetAttachedCodeLock(car);
 			if (codeLock == null)
 				return;
@@ -368,12 +375,6 @@ namespace Oxide.Plugins
 		private List<KeyValuePair<CodeLock, int>> FindPlayerAuths(ulong userId) =>
 			_codeLocks.Where(pair => pair.Key.whitelistPlayers.Contains(userId)).ToList();
 
-		private void AddCodeLock(ModularCar car)
-		{
-			PlaceCodeLockPrefab(car);
-			Puts($"Created codelock for car: {car.carLock.LockID}");
-		}
-
 		private void RemoveCodeLock(ModularCar car, int lockId = -1)
 		{
 			if (lockId == -1)
@@ -402,7 +403,7 @@ namespace Oxide.Plugins
 				player.ChatMessage(GetString(Localization.AlreadyAuthorized, car.carLock.LockID));
 				return;
 			}
-			
+
 			codeLock.whitelistPlayers.Add(player.userID);
 			GiveKeyToPlayer(player, car.carLock.LockID);
 			Puts($"Authorized {player} in lock {car.carLock.LockID}");
@@ -444,7 +445,7 @@ namespace Oxide.Plugins
 				PrintError($"{player} not authorized in {car.carLock.LockID}");
 				return;
 			}
-			
+
 			codeLock.whitelistPlayers.Remove(player.userID);
 			var key = player.inventory.containerMain.itemList.FirstOrDefault(item =>
 				item.info.itemid == CAR_KEY_ITEM_ID && item.instanceData.dataInt == car.carLock.LockID);
@@ -493,7 +494,7 @@ namespace Oxide.Plugins
 		[CanBeNull]
 		private static CodeLock GetAttachedCodeLock(ModularCar codeLock) => codeLock.GetComponentInChildren<CodeLock>();
 
-		private void PlaceCodeLockPrefab(ModularCar car)
+		private void AddCodeLock(ModularCar car)
 		{
 			if (HasCodeLock(car))
 			{
@@ -519,6 +520,8 @@ namespace Oxide.Plugins
 			_codeLocks.Add(codeLock, car.carLock.LockID);
 			Effect.server.Run("assets/prefabs/locks/keypad/effects/lock-code-deploy.prefab", codeLock.transform.position);
 			codeLock.SetFlag(BaseEntity.Flags.Locked, false);
+
+			Puts($"Created codelock for car: {car.carLock.LockID}");
 		}
 
 		private void GiveKeyToPlayer(BasePlayer player, int keyId)
