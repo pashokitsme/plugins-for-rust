@@ -48,8 +48,8 @@ namespace Oxide.Plugins
 			watch.Start();
 			players.All
 				.Select(pl => pl.ToBase())
-				.Where(pl2 => pl2 != null)
-				.Select(pl3 => pl3.inventory.containerMain.itemList)
+				.Where(pl => pl != null)
+				.Select(pl => pl.inventory.containerMain.itemList)
 				.ToList()
 				.ForEach(itemList =>
 					itemList.RemoveAll(item => item.info.itemid == CAR_KEY_ITEM_ID && _codeLocks.ContainsValue(item.instanceData.dataInt) == false));
@@ -63,16 +63,17 @@ namespace Oxide.Plugins
 
 		private static class Localization
 		{
-			public static readonly string NoLock = Guid.NewGuid().ToString();
-			public static readonly string AlreadyHasLock = Guid.NewGuid().ToString();
-			public static readonly string ShouldLookAtCar = Guid.NewGuid().ToString();
-			public static readonly string Locked = Guid.NewGuid().ToString();
-			public static readonly string Unlocked = Guid.NewGuid().ToString();
-			public static readonly string AlreadyAuthorized = Guid.NewGuid().ToString();
-			public static readonly string CantCraftKey = Guid.NewGuid().ToString();
-			public static readonly string NoAuths = Guid.NewGuid().ToString();
-			public static readonly string Authorized = Guid.NewGuid().ToString();
-			public static readonly string Deauthorized = Guid.NewGuid().ToString();
+			public const string NoLock = "NoLock";
+			public const string AlreadyHasLock = "AlreadyHasLock";
+			public const string VehicleDied = "VehicleDied";
+			public const string ShouldLookAtCar = "ShouldLookAtCar";
+			public const string Locked = "Locked";
+			public const string Unlocked = "Unlocked";
+			public const string AlreadyAuthorized = "AlreadyAuthorized";
+			public const string CantCraftKey = "CantCraftKey";
+			public const string NoAuths = "NoAuths";
+			public const string Authorized = "Authorized";
+			public const string Deauthorized = "Deauthorized";
 		}
 
 		protected override void LoadDefaultMessages()
@@ -81,6 +82,7 @@ namespace Oxide.Plugins
 			{
 				[Localization.NoLock] = "This vehicle don't have a lock",
 				[Localization.AlreadyHasLock] = "This vehicle already has a lock",
+				[Localization.VehicleDied] = "This vehicle is died",
 				[Localization.ShouldLookAtCar] = "You should look at car",
 				[Localization.Locked] = "Vehicle locked. LockId is {0}",
 				[Localization.Unlocked] = "Vehicle unlocked",
@@ -279,8 +281,7 @@ namespace Oxide.Plugins
 			var car = GetAttachedCar(codeLock);
 			if (car == null)
 				return null;
-
-			codeLock.whitelistPlayers.Add(player.userID);
+			
 			Authorize(player, car);
 			return null;
 		}
@@ -299,14 +300,21 @@ namespace Oxide.Plugins
 			if (car == null)
 				return;
 
-			if (HasCodeLock(car) == false)
+			if (car.IsDead())
 			{
-				AddCodeLock(car);
-				activeItem.UseItem();
+				player.ChatMessage(GetString(Localization.VehicleDied));
 				return;
 			}
-
-			player.ChatMessage(GetString(Localization.AlreadyHasLock));
+			
+			if (HasCodeLock(car))
+			{
+				player.ChatMessage(GetString(Localization.AlreadyHasLock));
+				return;
+			}
+			
+			AddCodeLock(car);
+			activeItem.UseItem();
+			return;
 		}
 
 		[UsedImplicitly]
@@ -314,12 +322,10 @@ namespace Oxide.Plugins
 		{
 			if (_codeLocks.ContainsKey(codeLock) == false)
 				return null;
+			
 
 			var car = GetAttachedCar(codeLock);
 			if (car == null)
-				return null;
-
-			if (codeLock.whitelistPlayers.Any() == false)
 				return null;
 			
 			codeLock.whitelistPlayers
@@ -328,7 +334,7 @@ namespace Oxide.Plugins
 				.ForEach((target => Deauthorize(target, codeLock)));
 
 
-				codeLock.whitelistPlayers.Clear();
+			codeLock.whitelistPlayers.Clear();
 			Authorize(player, car);
 
 			if (isGuestCode)
@@ -384,7 +390,7 @@ namespace Oxide.Plugins
 			var codeLock = car.GetComponentInChildren<CodeLock>();
 			codeLock.Kill(BaseNetworkable.DestroyMode.Gib);
 			car.carLock.RemoveLock();
-			Puts($"Removed codelock for car: {car.carLock.LockID}");
+			Puts($"Removed codelock for car(netID): {car.net.ID}");
 		}
 
 		private void Authorize(BasePlayer player, ModularCar car)
@@ -398,6 +404,11 @@ namespace Oxide.Plugins
 				return;
 			}
 
+			foreach (var ids in codeLock.whitelistPlayers)
+			{
+				player.ChatMessage(ids.ToString());
+			}
+			
 			if (codeLock.whitelistPlayers.Contains(player.userID))
 			{
 				player.ChatMessage(GetString(Localization.AlreadyAuthorized, car.carLock.LockID));
@@ -517,8 +528,7 @@ namespace Oxide.Plugins
 			_codeLocks.Add(codeLock, car.carLock.LockID);
 			Effect.server.Run(CODELOCK_DEPLOY_EFFECT, codeLock.transform.position);
 			codeLock.SetFlag(BaseEntity.Flags.Locked, false);
-
-			Puts($"Created codelock for car: {car.carLock.LockID}");
+			Puts($"Created codelock for car(netID): {car.net.ID}");
 		}
 
 		private void GiveKeyToPlayer(BasePlayer player, int keyId)
