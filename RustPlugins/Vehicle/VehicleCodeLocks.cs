@@ -19,6 +19,8 @@ namespace Oxide.Plugins
 
 		private const int CAR_KEY_ITEM_ID = 946662961;
 		private const int CODE_LOCK_ITEM_ID = 1159991980;
+		private const string CODELOCK_PREFAB = "assets/prefabs/locks/keypad/lock.code.prefab";
+		private const string CODELOCK_DEPLOY_EFFECT = "assets/prefabs/locks/keypad/effects/lock-code-deploy.prefab";
 
 		#region Plugin
 
@@ -317,18 +319,16 @@ namespace Oxide.Plugins
 			if (car == null)
 				return null;
 
-			if (codeLock.whitelistPlayers.Any())
-			{
-				foreach (var target in codeLock.whitelistPlayers
-					.Select(userId => players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase())
-					.Where(target => target != null))
-				{
-					Deauthorize(target, codeLock);
-				}
-			}
+			if (codeLock.whitelistPlayers.Any() == false)
+				return null;
+			
+			codeLock.whitelistPlayers
+				.Select(userId => players.All.FirstOrDefault(pl => pl.ToBase().userID == userId).ToBase())
+				.Where(target => target != null).ToList()
+				.ForEach((target => Deauthorize(target, codeLock)));
 
 
-			codeLock.whitelistPlayers.Clear();
+				codeLock.whitelistPlayers.Clear();
 			Authorize(player, car);
 
 			if (isGuestCode)
@@ -497,18 +497,15 @@ namespace Oxide.Plugins
 		private void AddCodeLock(ModularCar car)
 		{
 			if (HasCodeLock(car))
-			{
-				PrintError($"Already have lock");
 				return;
-			}
 
 			var target = car.GetFuelSystem().GetFuelContainer().transform;
 			var position = target.transform.localPosition;
-			position.x -= .4f;
-			position.z -= .1f;
+			position.x -= 0.4f;
+			position.z -= 0.1f;
 			var rotation = target.localRotation;
 			rotation.y += 1f;
-			var codeLock = GameManager.server.CreateEntity("assets/prefabs/locks/keypad/lock.code.prefab", position, rotation) as CodeLock;
+			var codeLock = GameManager.server.CreateEntity(CODELOCK_PREFAB, position, rotation) as CodeLock;
 
 			if (codeLock == null)
 				return;
@@ -518,7 +515,7 @@ namespace Oxide.Plugins
 			codeLock.Spawn();
 			car.carLock.AddALock();
 			_codeLocks.Add(codeLock, car.carLock.LockID);
-			Effect.server.Run("assets/prefabs/locks/keypad/effects/lock-code-deploy.prefab", codeLock.transform.position);
+			Effect.server.Run(CODELOCK_DEPLOY_EFFECT, codeLock.transform.position);
 			codeLock.SetFlag(BaseEntity.Flags.Locked, false);
 
 			Puts($"Created codelock for car: {car.carLock.LockID}");
