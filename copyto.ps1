@@ -12,7 +12,7 @@ for($i = 0; $i -lt $args.Count; $i++)
 
 $pwd = pwd;
  
-$files = Get-ChildItem -Path $pwd -Recurse -Filter *.cs -Exclude ".\RustPlugins\bin",".\RustPlugins\obj",".\.vs",".\.idea",".NETCoreApp,Version=v6.0.AssemblyAttributes.cs","RustPlugins.AssemblyInfo.cs","RustPlugins.GlobalUsings.g.cs"
+$files = Get-ChildItem -Path $pwd -Recurse -Filter *.cs -Exclude ".\RustPlugins\bin",".\RustPlugins\obj",".\.vs",".\.idea",".NETCoreApp,Version=v6.0.AssemblyAttributes.cs","RustPlugins.AssemblyInfo.cs","RustPlugins.GlobalUsings.g.cs",".NETFramework,Version=v4.8.AssemblyAttributes"
 
 foreach($file in $files)
 {

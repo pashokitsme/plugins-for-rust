@@ -8,11 +8,13 @@ using Network;
 using Oxide.Core.Libraries.Covalence;
 using Oxide.Plugins.VehicleCodeLocksPlugin;
 using UnityEngine;
+using UnityEngine.Android;
 using Extentions = Oxide.Plugins.VehicleCodeLocksPlugin.Extentions;
 
 namespace Oxide.Plugins
 {
-	[Info("Vehicle Code Locks", "pashamaladec", "0.1")]
+	[Info("VehicleCodeLocks", "pashamaladec", "1.0.0")]
+	[Description("Replaces standard car keys with code locks")]
 	public class VehicleCodeLocks : CovalencePlugin
 	{
 		private Dictionary<CodeLock, int> _codeLocks;
@@ -58,7 +60,18 @@ namespace Oxide.Plugins
 		}
 
 		#endregion
+		
+		#region Permissions
 
+		private static class PermissionList
+		{
+			public const string Auths = "vehiclecodelocks.command.auths";
+			public const string Auth = "vehiclecodelocks.command.auth";
+			public const string Lock = "vehiclecodelocks.command.lock";
+		}
+		
+		#endregion
+		
 		#region Localization
 
 		private static class Localization
@@ -98,15 +111,15 @@ namespace Oxide.Plugins
 
 		#region Commands
 
-		[Command("test"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
-		private void Test(IPlayer player, string cmd, string[] args)
+		[Command("v.auths"), Permission(PermissionList.Auths), UsedImplicitly]
+		private void ShowAuths(IPlayer player, string cmd, string[] args)
 		{
-			GetMyAuths(player, cmd, args);
-			GetKeys(player, cmd, args);
+			PrintPlayerAuthList(player);
+			PrintPlayerKeyList(player);
 		}
 
-		[Command("auth"), Permission("vehiclecodelocks.command.auth"), UsedImplicitly]
-		private void AuthorizeMe(IPlayer player, string cmd, string[] args)
+		[Command("v.auth"), Permission(PermissionList.Auths), UsedImplicitly]
+		private void ForceAuthorize(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
 			var entity = hit.GetEntity();
@@ -128,8 +141,8 @@ namespace Oxide.Plugins
 			player.Reply(GetString(Localization.Authorized, car.carLock.LockID));
 		}
 
-		[Command("deauth"), Permission("vehiclecodelocks.command.deauth"), UsedImplicitly]
-		private void DeauthorizeMe(IPlayer player, string cmd, string[] args)
+		[Command("v.deauth"), Permission(PermissionList.Auth), UsedImplicitly]
+		private void ForceDeauthorize(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
 			var entity = hit.GetEntity();
@@ -151,56 +164,7 @@ namespace Oxide.Plugins
 			player.Reply(GetString(Localization.Deauthorized, car.carLock.LockID));
 		}
 
-		[Command("auths"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
-		private void GetMyAuths(IPlayer player, string cmd, string[] args)
-		{
-			var baseplayer = player.ToBase();
-			var auths = FindPlayerAuths(baseplayer.userID);
-			player.Reply($"Current auths ({auths.Count()}):");
-			if (auths.Any() == false)
-			{
-				player.Reply(GetString(Localization.NoAuths));
-				return;
-			}
-
-			foreach (var pair in auths)
-				player.Reply($"{pair.Value} : {pair.Key.code} (netId {pair.Key.net.ID})");
-		}
-
-		[Command("lockid"), Permission("vehiclecodelocks.command.lockid"), UsedImplicitly]
-		private void GetCarLockId(IPlayer player, string cmd, string[] args)
-		{
-			var hit = player.RaycastFromEyes();
-			var entity = hit.GetEntity();
-			ModularCar car;
-			if (entity == null || entity.TryGetComponent(out car) == false)
-			{
-				player.Reply(GetString(Localization.ShouldLookAtCar));
-				return;
-			}
-
-			if (car.carLock.HasALock == false)
-			{
-				player.Reply(GetString(Localization.NoLock));
-				return;
-			}
-
-			player.Reply(car.carLock.LockID.ToString());
-		}
-
-		[Command("keys"), Permission("vehiclecodelocks.debug"), UsedImplicitly]
-		private void GetKeys(IPlayer player, string cmd, string[] args)
-		{
-			var baseplayer = player.ToBase();
-			player.Reply("Keys (physical auths):");
-
-			foreach (var key in baseplayer.inventory.containerMain.itemList.Where(item => item.info.itemid == CAR_KEY_ITEM_ID))
-			{
-				player.Reply(key.instanceData.dataInt.ToString());
-			}
-		}
-
-		[Command("unlock"), Permission("vehiclecodelocks.command.unlock"), UsedImplicitly]
+		[Command("v.unlock"), Permission(PermissionList.Lock), UsedImplicitly]
 		private void ForceUnlockCar(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
@@ -219,7 +183,7 @@ namespace Oxide.Plugins
 			player.Reply(GetString(Localization.Unlocked));
 		}
 
-		[Command("lock"), Permission("vehiclecodelocks.command.lock"), UsedImplicitly]
+		[Command("v.lock"), Permission(PermissionList.Lock), UsedImplicitly]
 		private void ForceLockCar(IPlayer player, string cmd, string[] args)
 		{
 			var hit = player.RaycastFromEyes();
@@ -228,6 +192,12 @@ namespace Oxide.Plugins
 			if (entity == null || entity.TryGetComponent(out car) == false)
 			{
 				player.Reply(GetString(Localization.ShouldLookAtCar));
+				return;
+			}
+
+			if (HasCodeLock(car))
+			{
+				player.Reply(GetString(Localization.AlreadyHasLock));
 				return;
 			}
 
@@ -314,7 +284,6 @@ namespace Oxide.Plugins
 			
 			AddCodeLock(car);
 			activeItem.UseItem();
-			return;
 		}
 
 		[UsedImplicitly]
@@ -377,6 +346,32 @@ namespace Oxide.Plugins
 		#endregion
 
 		#region Methods
+		
+		private void PrintPlayerAuthList(IPlayer player)
+		{
+			var baseplayer = player.ToBase();
+			var auths = FindPlayerAuths(baseplayer.userID);
+			player.Reply($"Current auths ({auths.Count()}):");
+			if (auths.Any() == false)
+			{
+				player.Reply(GetString(Localization.NoAuths));
+				return;
+			}
+
+			foreach (var pair in auths)
+				player.Reply($"{pair.Value} : {pair.Key.code} (netId {pair.Key.net.ID})");
+		}
+		
+		private void PrintPlayerKeyList(IPlayer player)
+		{
+			var baseplayer = player.ToBase();
+			player.Reply("Keys (physical auths):");
+
+			foreach (var key in baseplayer.inventory.containerMain.itemList.Where(item => item.info.itemid == CAR_KEY_ITEM_ID))
+			{
+				player.Reply(key.instanceData.dataInt.ToString());
+			}
+		}
 
 		private List<KeyValuePair<CodeLock, int>> FindPlayerAuths(ulong userId) =>
 			_codeLocks.Where(pair => pair.Key.whitelistPlayers.Contains(userId)).ToList();

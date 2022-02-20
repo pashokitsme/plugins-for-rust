@@ -72,6 +72,8 @@ namespace Oxide.Plugins
 			var hit = player.RaycastFromEyes();
 			var entity = hit.GetEntity();
 
+			var links = entity.GetEntityLinks();
+			
 			var builder = new StringBuilder($"You hitted: {entity.name} {entity.transform.position} {entity.transform.rotation}\n");
 
 			ParseComponents(builder, entity);
@@ -86,17 +88,12 @@ namespace Oxide.Plugins
 
 			var car = GameManager.server.CreateEntity("assets/content/vehicles/modularcar/car_chassis_3module.entity.prefab", hit.point) as ModularCar;
 			var cockpit = ItemManager.CreateByItemID(170758448);
-			var engines = new List<Item>(2)
-			{
-				ItemManager.CreateByItemID(1559779253),
-				ItemManager.CreateByItemID(1559779253)
-			};
 
 			car.Spawn();
-			foreach (var i in engines)
-				car.TryAddModule(i);
 
-			car.TryAddModule(cockpit, 2);
+			car.TryAddModule(ItemManager.CreateByItemID(1559779253), 0);
+			car.TryAddModule(cockpit, 1);
+			car.TryAddModule(ItemManager.CreateByItemID(1559779253), 2);
 			
 			var fuel = car.GetFuelSystem().GetFuelContainer();
 			var fuelItem = ItemManager.CreateByItemID(-946369541, 10000);
@@ -104,12 +101,8 @@ namespace Oxide.Plugins
 			
 			NextTick(() =>
 			{
-				foreach (var module in car.AttachedModuleEntities)
+				foreach (var engine in car.AttachedModuleEntities.OfType<VehicleModuleEngine>())
 				{
-					var engine = module as VehicleModuleEngine;
-					if (engine == null)
-						continue;
-
 					engine.engine.engineKW = 300;
 					
 					var storage = engine.GetContainer() as EngineStorage;
@@ -126,7 +119,7 @@ namespace Oxide.Plugins
 					};
 					
 					var engineParts = engineRawItems.ToDictionary(key => key.info.GetComponent<ItemModEngineItem>().engineItemType,
-							value => value);
+						value => value);
 					
 					for (var i = 0; i < storage.inventory.capacity; i++)
 					{
@@ -159,7 +152,7 @@ namespace Oxide.Plugins
 				builder.Append($"(parent {entity.parentEntity.Get(true).name})");
 			
 			var list = new List<Component>();
-			entity.gameObject.GetComponents(list);
+			entity.GetComponents(list);
 			list.ForEach(x => builder.AppendLine(x.ToString()));
 
 			if (entity.children.Any() == false)
