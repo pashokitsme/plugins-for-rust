@@ -7,7 +7,7 @@ using UnityEngine;
 namespace Oxide.Plugins
 {
 	[Info("HorseCopter", "pashamaladec", "1")]
-	public class Horsecopter : CovalencePlugin
+	public class HorseCopter : CovalencePlugin
 	{
 		private const string HORSE_PREFAB = "assets/rust.ai/nextai/testridablehorse.prefab";
 		private const string MINICOPTER_PREFAB = "assets/content/vehicles/minicopter/minicopter.entity.prefab";
@@ -17,6 +17,15 @@ namespace Oxide.Plugins
 		private void Init()
 		{
 			server.Broadcast("хуйня плагин загрузился");
+		}
+		
+		private void Unload()
+		{
+			foreach (var pair in _copters)
+			{
+				pair.Key.Kill();
+				pair.Value.Kill();
+			}
 		}
 
 		#region Commands
@@ -41,6 +50,7 @@ namespace Oxide.Plugins
 			copter.limitNetworking = true;
 			
 			copter.mountPoints = horse.mountPoints;
+
 			horse.maxSpeed = 0f;
 			horse.walkSpeed = 0f;
 			horse.runSpeed = 0f;
@@ -51,6 +61,8 @@ namespace Oxide.Plugins
 		}
 
 		#endregion
+		
+		#region Hooks
 
 		private void OnTick()
 		{
@@ -67,6 +79,23 @@ namespace Oxide.Plugins
 				pair.Key.transform.rotation = copterTransform.rotation;
 				
 				pair.Key.SendNetworkUpdate();
+			}
+		}
+		
+		private void OnEntityKill(BaseNetworkable entity)
+		{
+			var horse = entity as RidableHorse;
+			if (horse != null && _copters.ContainsKey(horse))
+			{
+				_copters[horse].Kill();
+				return;
+			}
+			
+			var copter = entity as MiniCopter;
+			if (copter != null && _copters.ContainsValue(copter))
+			{
+				_copters.First(x => x.Value == copter).Key.Kill();
+				return;
 			}
 		}
 		
@@ -90,6 +119,8 @@ namespace Oxide.Plugins
 			var copter = _copters[horse];
 			copter.PilotInput(input, player);
 		}
+		
+		#endregion
 
 		private static BasePlayer AsBase(IPlayer player) => player.Object as BasePlayer;
 	}
