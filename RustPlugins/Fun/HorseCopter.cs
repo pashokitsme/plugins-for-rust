@@ -13,11 +13,6 @@ namespace Oxide.Plugins
 		private const string MINICOPTER_PREFAB = "assets/content/vehicles/minicopter/minicopter.entity.prefab";
 
 		private readonly Dictionary<RidableHorse, MiniCopter> _copters = new Dictionary<RidableHorse, MiniCopter>();
-
-		private void Init()
-		{
-			server.Broadcast("хуйня плагин загрузился");
-		}
 		
 		private void Unload()
 		{
